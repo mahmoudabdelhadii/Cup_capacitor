@@ -1,0 +1,224 @@
+; Approximate index of sounds in file 'PercentageCupFull.wav'
+sound_index:
+    db 0x00, 0x00, 0x4d ; 0 
+    db 0x00, 0x45, 0x2e ; 1 
+    db 0x00, 0x5c, 0x29 ; 2  //empty
+    db 0x00, 0xda, 0x05 ; 3  // 9
+    db 0x01, 0x8d, 0xa0 ; 4 //18
+    db 0x02, 0x4a, 0x6a ; 5 
+    db 0x02, 0xad, 0xb0 ; 6 //27
+
+
+
+
+    Play_18: ; Playback a portion of the stored wav file
+	clr sound_on ; Stop Timer 2 ISR from playing previous request
+	setb FLASH_CE
+	clr SPEAKER ; Turn off speaker.
+ 
+; Set the begining of the sound to play
+	clr FLASH_CE ; Enable SPI Flash
+	mov a, #READ_BYTES
+	lcall Send_SPI
+	mov a, #0x01
+	lcall Send_SPI
+	mov a, #0x8d
+	lcall Send_SPI
+	mov a, #0xa0
+ 	lcall Send_SPI
+ 
+; Set how many bytes to play
+ 	mov w+2, #0x00
+ 	mov w+1, #0xbc
+ 	mov w+0, #0xca
+ 
+ 	mov a, #0x00 ; Request first byte to send to DAC
+ 	lcall Send_SPI
+ 
+ 	setb SPEAKER ; Turn on speaker.
+ 	setb sound_on ; Start playback by enabling timer 2
+ 	ret ; If this is a subroutine, it must end with 'ret'
+
+
+
+     ;-------------------------------------;
+; ISR for Timer 2.  Used to playback  ;
+; the WAV file stored in the SPI      ;
+; flash memory.                       ;
+;-------------------------------------;
+Timer2_ISR:
+	mov	SFRPAGE, #0x00
+	clr	TF2H ; Clear Timer2 interrupt flag
+	
+	; The registers used in the ISR must be saved in the stack
+	push acc
+	push psw
+	
+ 	jb one_sec_flag, sound_output ; check whether it's been a second
+ 	
+ 	mov a, tic_counter+0
+ 	cjne a, #low(22050), tic_incremental ; check and see whether tic_counter is at 22050
+ 	mov a, tic_counter+1
+ 	cjne a, #high(22050), tic_incremental
+ 	setb one_sec_flag ; if it is a 22050 set the one_second_counter and reset counter to zero
+ 	mov tic_counter+0, #0x00
+ 	mov tic_counter+1, #0x00
+ 	sjmp sound_output
+ 
+tic_incremental: ; if not at 22050, increment tic_counter
+ 	mov a, tic_counter+0
+ 	add a, #1
+ 	mov tic_counter+0,a 
+ 	mov a, tic_counter+1
+ 	addc a, #0
+ 	mov tic_counter+1,a
+
+sound_output:
+	
+	jnb Sound_On, Timer2_ISR_Done
+	; Check if the play counter is zero.  If so, stop playing sound.
+	mov a, w+0
+	orl a, w+1
+	orl a, w+2
+	jz stop_playing
+	
+	; Decrement play counter 'w'.  In this implementation 'w' is a 24-bit counter.
+	mov a, #0xff
+	dec w+0
+	cjne a, w+0, keep_playing
+	dec w+1
+	cjne a, w+1, keep_playing
+	dec w+2
+	
+	
+keep_playing:
+
+	setb SPEAKER
+	lcall Send_SPI ; Read the next byte from the SPI Flash...
+	
+	; It gets a bit complicated here because we read 8 bits from the flash but we need to write 12 bits to DAC:
+	mov SFRPAGE, #0x30 ; DAC registers are in page 0x30
+	push acc ; Save the value we got from flash
+	swap a
+	anl a, #0xf0
+	mov DAC0L, a
+	pop acc
+	swap a
+	anl a, #0x0f
+	mov DAC0H, a
+	mov SFRPAGE, #0x00
+	
+	sjmp Timer2_ISR_Done
+
+stop_playing:
+	clr sound_on ; De-assert sound_on flag
+	setb FLASH_CE  ; Disable SPI Flash
+	clr SPEAKER ; Turn off speaker.  Removes hissing noise when not playing sound.
+	;clr playing_sound
+
+Timer2_ISR_Done:	
+	pop psw
+	pop acc
+	reti
+
+
+
+
+    Init_all:
+    .
+    .
+    .
+    .
+    .
+    clr sound_on
+	mov tic_counter, #0x00
+	mov w+2,#0x00
+	mov w+1,#0x00
+	mov w+0,#0x00
+	
+	
+	setb EA ; Enable interrupts
+	
+	ret
+
+
+
+    ; Code to read frequency
+	clr TR0
+	mov TH0, #0x00
+	mov TL0, #0x00
+	setb TR0
+	clr one_sec_flag
+	jnb one_sec_flag, $ ; Wait for a second to pass
+	clr TR0
+
+    mov x+0,TL0
+    mov x+1,TH0         ; freq in x
+    mov x+2,#0
+    mov x+3,#0
+	    
+   	Load_x(ResistorB) ;Rb = 2*5000
+   
+   	Load_y(2)    ;multiply by 2
+
+   	lcall mul32 
+
+   	Load_y(ResistorA)  ;Ra = 3000
+   
+
+	lcall add32     ;(Ra+2Rb) in x
+	 
+	mov y+0,x+0
+    mov y+1,x+1 
+   	mov y+2,x+2         ;(Ra+2Rb) in y
+   	mov y+3,x+3
+       
+   	mov x+0,TL0
+   	mov x+1,TH0         ; freq in x
+   	mov x+2,#0
+   	mov x+3,#0
+
+   	lcall mul32
+
+   	Load_y(88)
+   	lcall div32
+    
+   	
+   	mov y+0,x+0
+   	mov y+1,x+1
+    mov y+2,x+2
+    mov y+3,x+3 
+  
+    Load_x(144000000)
+ 
+    lcall div32
+    lcall hex2bcd
+    lcall Display_8_digit_BCD     
+    Set_Cursor(2,14)
+    Send_Constant_String(#nf_message)
+
+
+     ; Check if play counter == zero if it is not, do not fetch new sound
+    mov a, w+0
+    orl a, w+1
+    orl a, w+2
+    jnz forever_loop_intermed
+	;jnb playing_sound, forever_loop_intermed
+    lcall fetch_sound
+    ;setb playing_sound
+    
+	ljmp forever_loop
+
+
+check_lower9: ;64
+    Load_y (10680)
+    lcall x_gteq_y
+    jb mf,check_upper9
+    ljmp sound_done
+
+    check_upper9:
+    Load_y (10720)
+    lcall x_lteq_y
+    jnb mf, check_lower10
+    lcall Play_64
+    ljmp sound_done
